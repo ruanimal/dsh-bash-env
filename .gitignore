@@ -1,0 +1,34 @@
+# dsh-sidebar-panel-buttons has no runtime dependencies: the browser half is the
+# hand-written lib/client.js and the host half is lib/index.js. Everything
+# ignored below is either a transient test install or local tooling output.
+
+# ── dependencies ────────────────────────────────────────────────────────────
+# Only ever created by the optional `npm install --no-save happy-dom` that
+# test/dom.mjs needs (see README → 测试).
+node_modules/
+.pnpm-store/
+.npm/
+
+# Lockfiles: the package declares no dependencies, so there is nothing to pin.
+# Remove these two lines once you actually add a dependency.
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# ── test and tooling output ────────────────────────────────────────────────
+coverage/
+*.tsbuildinfo
+
+# ── packing and logs ───────────────────────────────────────────────────────
+*.tgz
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# ── editor and OS cruft ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

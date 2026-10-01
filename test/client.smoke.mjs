@@ -142,7 +142,7 @@ function makeContext(options = {}) {
 					id,
 					spec: { namespace: id },
 					subscribe: () => () => {},
-					getSnapshot: () => ({ status: 'ready', writable: true, value: {}, user: {}, revision: 1 }),
+					getSnapshot: () => options.scopeSnapshot ?? ({ status: 'ready', writable: true, value: {}, user: {}, revision: 1 }),
 					mutate: options.scopeMutate ?? (async () => true),
 				}
 				scopes.push(scope)
@@ -274,6 +274,39 @@ describe('client bundle', () => {
 		assert.equal(spec.format('false'), 'false')
 		assert.equal(spec.format(true), 'true')
 		assert.equal(spec.format(undefined), '')
+	})
+
+	it('unwraps a volatile reader so no control renders empty', () => {
+		const { exports } = loadBundle({})
+		// A reader instead of a value: every `typeof` check fails on it, so a form
+		// that does not unwrap shows an empty box (and an unchecked checkbox) for a
+		// value that is configured — which is how a save ends up clearing it.
+		assert.equal(exports.unwrapField({ get: () => true }), true)
+		assert.deepEqual(exports.unwrapField({ get: () => ['/a'] }), ['/a'])
+		assert.equal(exports.unwrapField('plain'), 'plain')
+		assert.equal(exports.unwrapField(undefined), undefined)
+		assert.deepEqual(exports.unwrapRecord({ a: { get: () => ['/x'] }, b: 2 }), { a: ['/x'], b: 2 })
+		assert.equal(exports.unwrapRecord(undefined), undefined)
+	})
+
+	it('unwraps the snapshot the form model reads through', () => {
+		const { exports } = loadBundle({})
+		const { ctx, registered } = makeContext({
+			scopeSnapshot: {
+				status: 'ready',
+				writable: true,
+				revision: 1,
+				value: { miseEnabled: { get: () => true }, prependPath: { get: () => ['/a'] } },
+				user: { miseEnabled: { get: () => true } },
+			},
+		})
+		exports.apply(ctx)
+		assert.ok(registered.length === 1)
+		const snapshot = lastScope().getSnapshot()
+		assert.equal(snapshot.miseEnabled, undefined, 'the snapshot itself is untouched')
+		assert.equal(snapshot.value.miseEnabled, true)
+		assert.deepEqual(snapshot.value.prependPath, ['/a'])
+		assert.equal(snapshot.user.miseEnabled, true)
 	})
 
 	it('explains a stale revision and reports the replay as a save', async () => {

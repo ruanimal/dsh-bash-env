@@ -179,7 +179,9 @@ dsh plugin --profile <profile> add link:/path/to/dsh-bash-env
 - **四个分组**：命令预算 / PATH 与环境变量 / Python 虚拟环境 / mise 工具链。每组带一句组说明（例如其余预算项要去 YAML 配）。
 - **每个设置项**：一句 `hint` 常驻显示；更长的说明放在壳层的信息按钮弹出区里（`SettingsValueField` 的 `help`）。列表与勾选类控件用原生 `<details>` 承担同样的角色，因为壳层的 primitive 只提供单行 input。
 
-绑定的是 profile 里真实组合出的 `bash-env` 行；插件未启用时该分区不出现。保存写入的就是同一个 user 层，与手改 YAML 等价。
+绑定的是 profile 里真实组合出的 `bash-env` 行，**且无条件注册**：官方设置卡用 `configForms.whileServed` 门控（"没组合这个插件就不出现"），而那个判据读的是**宿主回报的命名空间列表**——如果某个前端 shell 不回报这份列表（例如局域网 bridge 的页面），入口就会整个消失，看起来和"插件没加载"一模一样。所以本插件改为始终注册，命名空间确实不可用时由设置表单自己显示「该插件当前未加载，暂时无法配置」——有入口并说明状态，比静默消失有用。
+
+保存写入的就是同一个 user 层，与手改 YAML 等价。
 
 > 由于 `bash-sandbox` 被本插件禁用，官方那个 "Terminal / 终端" 设置卡会随之消失（它 `whileServed(['bash-sandbox','pwsh-sandbox'])`）。命令超时与输出上限已并入本分区，功能没有丢失。
 

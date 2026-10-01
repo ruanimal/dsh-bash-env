@@ -193,7 +193,7 @@ describe('client bundle', () => {
 		const { exports } = loadBundle({
 			'@deepseek-ai/dsh-client-ui-primitives': { SettingsFormModel: FakeFormModel, SettingsForm: 'SettingsForm', SettingsValueField: 'SettingsValueField', settingsNumberField: (field) => ({ field, format: String, parse: (text) => ({ kind: 'set', value: Number(text) }) }), settingsTextField: (field) => ({ field, format: String, parse: (text) => ({ kind: 'set', value: text }) }) },
 		})
-		const { ctx, registered, dictionaries, served } = makeContext()
+		const { ctx, registered, dictionaries, served, scopes } = makeContext()
 		exports.apply(ctx)
 
 		assert.deepEqual(dictionaries.map(([ns]) => ns), ['settings.bashEnv'])
@@ -210,8 +210,11 @@ describe('client bundle', () => {
 		assert.equal(options.locale, 'settings.bashEnv')
 		assert.equal(typeof options.label, 'function')
 
-		// Bound to the profile entry the Host composes, and gated on it being served.
-		assert.deepEqual(served, [['bash-env']])
+		// Bound to the profile entry the Host composes, and registered unconditionally:
+		// gating on the served namespace list loses the entry on a shell that does not
+		// report one, which is indistinguishable from a plugin that never loaded.
+		assert.deepEqual(served, [], 'the section does not wait for a served namespace')
+		assert.deepEqual(scopes.map((scope) => scope.id), ['bash-env'], 'bound to the composed entry id')
 	})
 
 	it('binds every control the schema exposes, and no unknown one', () => {

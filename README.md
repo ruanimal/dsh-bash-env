@@ -210,6 +210,31 @@ dsh plugin --profile <profile> add link:/path/to/dsh-bash-env
 
 另外 `booleanField` 的 `format` 容忍宿主把布尔值回传成字符串 `'true'`/`'false'`：否则复选框会把已启用的项显示成未勾选，诱使你点一下、产生一次本不需要的写入。
 
+### 为什么局域网页面上这个入口不能配置
+
+**dsh 自身把设置界面限制在本机 loopback**，与本插件无关。`dsh-client-ui-settings` 这样决定持久化方式：
+
+```js
+const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";
+```
+
+而 `isLoopback` 由**浏览器地址栏**判定（`dsh-client-connection`：`isLoopbackHostname(pageLocation.hostname)`，即 localhost / ::1 / 127/8）。一旦用局域网 IP 打开（如 `http://192.168.10.20:3082/`），持久化退化为 `memory`，而 memory 模式下：
+
+```js
+load()   { if (this.persistence === "memory") return Promise.resolve(); … }   // 不读命名空间
+ensure() { if (this.persistence === "memory") return Promise.resolve(); … }   // 同上
+mutate() { if (this.persistence === "memory" …) return Promise.resolve(false) } // 不写
+```
+
+后果有两个，都会遇到：
+
+- **任何插件的设置页都显示"未加载 / 无法配置"**（镜像从未加载 → 命名空间永远不是 `ready`）。官方的设置卡还会因此**整个不出现**（它们用 `whileServed` 门控）。
+- **保存被客户端直接拒绝**，报"本部署没有接受这些值"——请求根本没发到宿主。
+
+所以：**设置请在本机页面（`127.0.0.1:3080`，或桌面 App 打开的页面）修改**。从远程页面发起的命令**同样会用到这些设置**，因为环境是在宿主侧按工作目录解析的——只有"编辑"受这个限制。
+
+本插件的卡片改为**无条件注册**，所以远程页面上至少能看到入口和它的真实状态（而不是入口静默消失）。
+
 ### 为什么页内没有"运行一条命令"的测试器
 
 这是刻意的取舍，不是遗漏。客户端要触达宿主只有两条路：

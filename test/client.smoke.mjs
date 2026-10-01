@@ -99,7 +99,7 @@ class FakeFormModel {
 		return { get: () => project() }
 	}
 	shell() {
-		return { available: true, writable: true, dirty: false, invalid: false, saving: false, failed: false }
+		return { available: this.scope?.getSnapshot?.()?.available ?? true, writable: true, dirty: false, invalid: false, saving: false, failed: false }
 	}
 	field(name) {
 		return { text: `value-of-${name}`, overridden: false, invalid: false }
@@ -155,7 +155,7 @@ function makeContext(options = {}) {
 					id,
 					spec: { namespace: id },
 					subscribe: () => () => {},
-					getSnapshot: () => options.scopeSnapshot ?? ({ status: 'ready', writable: true, value: {}, user: {}, revision: 1 }),
+					getSnapshot: () => options.scopeSnapshot ?? ({ status: options.scopeStatus ?? 'ready', writable: true, available: options.scopeAvailable ?? true, value: {}, user: {}, revision: 1 }),
 					mutate: options.scopeMutate ?? (async () => true),
 				}
 				scopes.push(scope)
@@ -381,6 +381,24 @@ describe('client bundle', () => {
 			...face,
 		})
 		assert.ok(collectStrings(tree).includes('failureUnknown'))
+	})
+
+	it('explains an unserved namespace instead of showing a bare sentence', () => {
+		const { exports } = loadBundle({})
+		const { ctx, registered } = makeContext({ scopeAvailable: false, scopeStatus: 'loading' })
+		exports.apply(ctx)
+		const [options, component] = registered[0]
+		const face = options.inject()
+		const tree = component({
+			t: (key) => key,
+			view: 'full',
+			useBashEnvCard: (select) => select(face.hooks.bashEnvCard.get()),
+			...face,
+		})
+		const text = collectStrings(tree)
+		assert.ok(text.includes('unavailableStatus'), 'the note reports what this page knows')
+		assert.ok(text.includes('unavailableHint'), 'and what that state means')
+		assert.ok(text.includes('loading'), 'including the namespace status')
 	})
 
 	it('converts each control between its text draft and its schema value', () => {

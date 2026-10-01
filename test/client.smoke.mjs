@@ -233,6 +233,8 @@ describe('client bundle', () => {
 			'miseEnabled',
 			'miseShims',
 			'miseAutoInstall',
+			'miseHookEnv',
+			'miseBin',
 		])
 	})
 
@@ -254,7 +256,7 @@ describe('client bundle', () => {
 			...face,
 		})
 		assert.equal(tree.type, 'SettingsForm')
-		for (const key of ['timeoutMs', 'maxOutputBytes', 'prependPath', 'envFile', 'envVars', 'bashEnv', 'venvEnabled', 'venvNames', 'venvMaxDepth', 'venvStopAt', 'venvFallback', 'miseEnabled', 'miseShims', 'miseAutoInstall']) {
+		for (const key of ['timeoutMs', 'maxOutputBytes', 'prependPath', 'envFile', 'envVars', 'bashEnv', 'venvEnabled', 'venvNames', 'venvMaxDepth', 'venvStopAt', 'venvFallback', 'miseEnabled', 'miseShims', 'miseAutoInstall', 'miseHookEnv', 'miseBin']) {
 			assert.ok(keys.includes(key), `the card renders a control for ${key}`)
 		}
 		for (const key of ['introTitle', 'introLead', 'introOrderLabel', 'introWhenLabel', 'introErrorsLabel', 'introScope', 'introShellCardNote', 'groupBudgets', 'groupBudgetsNote', 'groupPath', 'groupVenv', 'groupMise']) {

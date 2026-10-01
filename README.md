@@ -55,6 +55,8 @@ dsh 的每条命令都是**非登录、非交互**的 `bash -c`（`~/.bashrc`、
 | `miseEnabled` | `true` | 是否启用 mise 支持 |
 | `miseShims` | `~/.local/share/mise/shims` | shim 目录，加入 PATH |
 | `miseAutoInstall` | `false` | `false` 时注入 `MISE_AUTO_INSTALL=false` / `MISE_NOT_FOUND_AUTO_INSTALL=false` |
+| `miseHookEnv` | `false` | 打开后每个目录问一次 `mise hook-env`，拿到 `JAVA_HOME`/`GOROOT`/`GOBIN` 与项目 `[env]` 段 |
+| `miseBin` | `''` | mise 可执行文件；留空用 PATH 上的 `mise` |
 | `cwd` / `timeoutMs` / `maxTimeoutMs` / `maxOutputBytes` / `maxSpillBytes` / `graceMs` | — | 继承内置 executor 的预算字段 |
 
 环境合成顺序：
@@ -83,6 +85,34 @@ LITERAL='$HOME 不被展开'
 - 单引号包裹的值不做展开
 - 变量名必须合法；`DSH_*` 前缀被拒绝（harness 自己的命名空间）
 - 某一行格式不对 → 命令带着 `文件:行号` 的明确报错失败，改好即恢复
+
+### mise 的派生变量（JAVA_HOME / GOROOT / GOBIN）
+
+shims 回答的是"运行哪个可执行文件"，它**回答不了**"该用哪个 JAVA_HOME"——那是变量，不是文件。所以 `miseHookEnv` 走另一条路：每个目录问一次 `mise hook-env`，拿到完整答案（派生变量 + 项目自己的 `[env]` 段），并按目录缓存。
+
+**为什么值得**（实测，10 次平均）：
+
+| | 成本 |
+|---|---|
+| `mise hook-env`（每条命令） | ~20ms，**缓存命中后 ≈0** |
+| 一次 shim 调用 | ~30ms |
+
+一条命令里调 `node -v` + `npm -v` + `java -version`，用 shims 要付 ~90ms；用 hook-env（缓存后）是 0，而且顺带得到 `JAVA_HOME`。**成功时不再叠加 shims**——那会把刚省下的成本加回去。
+
+**缓存键**：`(规范化 workdir, mise 配置指纹)`。指纹是沿目录链 stat `mise.toml`/`.mise.toml`/`mise.local.toml`/`.tool-versions` 加上 `~/.config/mise/config.toml` 的 mtime+size，另配 5 分钟 TTL 与 64 条 LRU 上限（否则长时间会话会攒下无数目录）。`mise install` 改了配置 → 指纹变化 → 自动重问。
+
+**失败一律回落 shims，不让命令失败**：mise 未安装、探测超时（3s 上限）、退出码非零、或输出里没有可用变量——四种都归到 `shims-fallback`。走哪条路由可以从托管事实看到：
+
+```bash
+echo "$DSH_MISE"      # hook-env | shims | shims-fallback
+```
+
+**两个必须知道的点**：
+
+1. **`hook-env` 是 mise 的内部接口**（帮助里写着 `[internal] called by activate hook`），版本间可能变。所以解析是"看不懂就忽略"、输出为空即视为失败，整个功能默认关闭。
+2. **项目的 `[env]` 段属于这份答案**，也就是说仓库里的一个文件可以为在其中执行的每条命令设置变量。这是它默认关闭的真正原因——要开请自己确认那些仓库可信（mise 自身的 `trust` 门也会拦未信任的配置）。
+
+**默认关闭**。打开方式：设置 → 终端环境 → 「向 mise 询问当前目录解析出什么」；mise 不在 PATH 上时再填 `miseBin`。
 
 ### BASH_ENV / shell 启动文件
 

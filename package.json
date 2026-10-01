@@ -38,12 +38,13 @@
   },
   "scripts": {
     "link-host": "node scripts/link-host.mjs",
-    "test": "node --test test/resolve.test.mjs test/client.smoke.mjs",
+    "test": "node --test test/resolve.test.mjs test/mise.test.mjs test/client.smoke.mjs",
     "test:client": "node --test test/client.smoke.mjs",
     "test:unit": "node --test test/resolve.test.mjs",
     "test:integration": "node --test test/executor.integration.mjs",
-    "test:all": "node --test test/resolve.test.mjs test/client.smoke.mjs test/executor.integration.mjs",
-    "check": "node --check lib/index.js && node --check lib/resolve.js && node --check lib/client.js && node --check scripts/link-host.mjs"
+    "test:all": "node --test test/resolve.test.mjs test/mise.test.mjs test/client.smoke.mjs test/executor.integration.mjs",
+    "check": "node --check lib/index.js && node --check lib/resolve.js && node --check lib/mise.js && node --check lib/client.js && node --check scripts/link-host.mjs",
+    "test:mise": "node --test test/mise.test.mjs"
   },
   "keywords": [
     "deepseek-harness",

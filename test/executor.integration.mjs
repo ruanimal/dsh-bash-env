@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
@@ -35,6 +35,18 @@ function scratch() {
 	const dir = mkdtempSync(join(tmpdir(), 'dsh-bash-env-it-'))
 	roots.push(dir)
 	return dir
+}
+
+/**
+ * Write an executable stand-in for `mise`, so the integration path can be tested
+ * without mise installed and without waiting on the real one.
+ * @param body - the script body.
+ * @returns the script's absolute path.
+ */
+function makeStubMise(body) {
+	const file = join(scratch(), 'mise')
+	writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+	return file
 }
 
 /** Create a directory that looks like a usable virtual environment. */
@@ -215,6 +227,35 @@ describe('mounted executor', () => {
 			() => run(root, 'printf ok', process.cwd()),
 			(error) => /must be an absolute path/.test(error.message),
 		)
+	})
+
+	it('takes JAVA_HOME from a hook-env probe when asked', async () => {
+		const bin = makeStubMise("printf \"export JAVA_HOME=/stub/jdk\\nexport PATH='/stub/bin:%s'\\n\" \"$PATH\"")
+		const root = await mount({ config: { venvEnabled: false, miseHookEnv: true, miseBin: bin, miseShims: '/shims' } })
+		const result = await run(root, 'printf "%s|%s" "$JAVA_HOME" "$DSH_MISE"', process.cwd())
+		assert.equal(result.stdout.text, '/stub/jdk|hook-env')
+		// The probe's paths already carry the tools, so the shims stay out of PATH.
+		const path = result.stdout.text.length > 0 ? (await run(root, 'printf %s "$PATH"', process.cwd())).stdout.text : ''
+		assert.ok(path.split(':').includes('/stub/bin'), 'the probe PATH is the base')
+		assert.ok(!path.split(':').includes('/shims'), 'shims are not added alongside hook-env')
+	})
+
+	it('falls back to shims when the probe fails, and names the fallback', async () => {
+		const bin = makeStubMise('exit 3')
+		const root = await mount({ config: { venvEnabled: false, miseHookEnv: true, miseBin: bin, miseShims: '/shims' } })
+		const result = await run(root, 'printf "%s|%s" "$DSH_MISE" "$(printf %s "$PATH" | cut -d: -f1)"', process.cwd())
+		assert.equal(result.stdout.text, 'shims-fallback|/shims')
+	})
+
+	it('probes mise once per directory, then reuses the answer', async () => {
+		const calls = join(scratch(), 'calls')
+		const bin = makeStubMise(`printf 'x' >> ${JSON.stringify(calls)}\nprintf "export JAVA_HOME=/stub/jdk\\n"`)
+		const root = await mount({ config: { venvEnabled: false, miseHookEnv: true, miseBin: bin, miseShims: '/shims' } })
+		await run(root, 'true', process.cwd())
+		await run(root, 'true', process.cwd())
+		await run(root, 'true', process.cwd())
+		const count = readFileSync(calls, 'utf8').length
+		assert.equal(count, 1, 'three commands in one directory cost one probe')
 	})
 
 	it('keeps managed DSH_* facts authoritative over configuration', async () => {

@@ -510,6 +510,48 @@ describe('resolveShellEnv', () => {
 		assert.equal(env.BASH_ENV, '/explicit.sh')
 	})
 
+	it('takes the hook-env answer and skips the shims it makes unnecessary', () => {
+		const root = scratch()
+		const venv = makeVenv(join(root, '.venv'))
+		const env = resolveShellEnv({
+			workdir: root,
+			inherited,
+			config: { prependPath: ['/extra'], miseEnabled: true, miseShims: '/mise/shims' },
+			miseEnv: { kind: 'hook-env', vars: { PATH: '/mise/go/bin:/usr/bin:/bin', JAVA_HOME: '/jdk', GOROOT: '/go' } },
+		})
+		assert.equal(env.DSH_MISE, 'hook-env')
+		assert.equal(env.JAVA_HOME, '/jdk')
+		assert.equal(env.GOROOT, '/go')
+		// The venv and the configured entries still lead; the probe's PATH is the base.
+		assert.equal(env.PATH, `${venv}/bin:/extra:/mise/go/bin:/usr/bin:/bin`)
+		assert.ok(!env.PATH.includes('/mise/shims'), 'shims are not re-added when hook-env answered')
+	})
+
+	it('keeps the shims when the probe could not answer, and says so', () => {
+		const env = resolveShellEnv({
+			workdir: scratch(),
+			inherited,
+			config: { miseEnabled: true, miseShims: '/mise/shims' },
+			miseEnv: { kind: 'shims-fallback', detail: 'mise hook-env exited with 3' },
+		})
+		assert.equal(env.DSH_MISE, 'shims-fallback')
+		assert.equal(env.PATH, '/mise/shims:/usr/bin:/bin')
+	})
+
+	it('reports plain shims when the probe was never asked for', () => {
+		const env = resolveShellEnv({
+			workdir: scratch(),
+			inherited,
+			config: { miseEnabled: true, miseShims: '/mise/shims' },
+		})
+		assert.equal(env.DSH_MISE, 'shims')
+	})
+
+	it('claims no mise fact at all when mise support is off', () => {
+		const env = resolveShellEnv({ workdir: scratch(), inherited, config: { miseEnabled: false } })
+		assert.equal('DSH_MISE' in env, false)
+	})
+
 	it('sets no PATH when nothing is prepended and none is inherited', () => {
 		const env = resolveShellEnv({ workdir: scratch(), inherited: {}, config: only({}) })
 		assert.equal('PATH' in env, false)

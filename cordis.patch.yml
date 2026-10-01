@@ -1,0 +1,29 @@
+# dsh-bash-env bundle layer.
+#
+# `ctx.shell` admits exactly one implementation per context and a second
+# registrant throws, so the built-in executor row has to be disabled before
+# this one mounts. The disabled row is re-derived from the original parse on
+# every (re)compose, so deleting this file restores the built-in executor.
+- id: bash-sandbox
+  disabled: true
+
+- insert:
+    # `name` must be the FULL package specifier as installed in the profile's
+    # node_modules (pnpm links packages by their true name).
+    #
+    # This row carries no config on purpose: the package ships the mechanism,
+    # the profile's own cordis.patch.yml carries the site values. Add them
+    # there as an id-targeted override, for example:
+    #
+    #   - id: bash-env
+    #     config:
+    #       prependPath:
+    #         - /home/you/.local/share/mise/shims
+    #         - /home/you/.cargo/bin
+    #       venv:
+    #         fallback: /home/you/.venv
+    - id: bash-env
+      name: dsh-bash-env
+      # Windows has no `bash`; the built-in row is gated the same way, and the
+      # model-facing `bash` tool is disabled there too.
+      disabled: !!js process.platform === 'win32'

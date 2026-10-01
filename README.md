@@ -1,0 +1,229 @@
+# dsh-bash-env
+
+按 **workdir** 为 dsh 的每条 shell 命令计算环境：PATH 追加、任意环境变量、venv 自动激活、mise shims。带一个 **Web UI 设置分区**（设置 → 终端环境）。
+
+A dsh profile plugin that replaces the built-in bash executor so every `bash -c`
+gets an environment resolved from its own working directory, plus a dedicated
+settings section in the Web UI.
+
+## 它解决什么
+
+dsh 的每条命令都是**非登录、非交互**的 `bash -c`（`~/.bashrc`、`~/.bash_profile` 一个都不读），而子进程的 PATH 来自启动 dsh 的那个进程——桌面 App 由 GUI 会话拉起时，那份 PATH 里通常没有 `~/.cargo/bin`、mise shims 之类。于是在终端里能跑的命令，在 dsh 里"找不到命令"。
+
+本插件不引入 shell 启动文件，而是用 dsh 官方扩展点替换 `ctx.shell`，在**每次 spawn 前**按该命令的 `workdir` 算出环境覆盖层。
+
+## 两个配置入口，同一个 user 层
+
+| 入口 | 适用 |
+|---|---|
+| **Web UI：设置 → 终端环境** | 日常调整；写入与 YAML 相同的 user 层（即 profile 的 `cordis.patch.yml` 里 `id: bash-env` 那一段） |
+| `~/.dsh/profiles/<profile>/cordis.patch.yml` | 批量/脚本化；改完存盘由 HMR 立即重组配置层 |
+
+**两者都改完即生效，不需要重启**（配置层由 `dsh-hmr` 监听）。但**插件代码**改动不会被 HMR 重载（`hmr.root` 默认不监听模块文件），需要重启 harness。
+
+### 配置必须扁平
+
+设置表单只寻址**单段路径**（`SettingsFormModel` 的 `path: [field]`），所以一个嵌套块在浏览器里根本编辑不到。因此配置是每个开关一个顶层键：
+
+```yaml
+# ~/.dsh/profiles/<profile>/cordis.patch.yml
+- id: bash-env
+  name: dsh-bash-env
+  config:
+    prependPath:
+      - /home/you/.cargo/bin
+    envFile: /home/you/.dsh/shell-env.conf
+    envVars: {}
+    venvEnabled: true
+    venvFallback: /home/you/.venv
+    miseEnabled: true
+    miseShims: /home/you/.local/share/mise/shims
+    miseAutoInstall: false
+```
+
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `prependPath` | `[]` | 放在 PATH 前部的目录。**不做存在性剔除**（版本管理器首次安装后目录才出现），只在挂载时对不存在的项 warn |
+| `envFile` | `''` | 每行一条 `KEY=VALUE` 的文件；**spawn 时读取**，改完下一条命令即生效。设了但读不到 → 命令报错（明确可见，不静默） |
+| `envVars` | `{}` | 内联变量，优先级高于 `envFile` |
+| `bashEnv` | `''` | 一个绝对路径；bash 在每条非交互命令前 source 它。**留空即关闭** |
+| `venvEnabled` | `true` | 是否查找虚拟环境 |
+| `venvNames` | `['.venv','venv']` | 每层候选目录名 |
+| `venvMaxDepth` | `3` | 从 workdir 向上查找的层数 |
+| `venvStopAt` | `$HOME` | 查找**不进入**该目录；家目录 venv 因此不会隐式生效 |
+| `venvFallback` | `''` | 查找未命中时使用；不可用时保持不激活 |
+| `miseEnabled` | `true` | 是否启用 mise 支持 |
+| `miseShims` | `~/.local/share/mise/shims` | shim 目录，加入 PATH |
+| `miseAutoInstall` | `false` | `false` 时注入 `MISE_AUTO_INSTALL=false` / `MISE_NOT_FOUND_AUTO_INSTALL=false` |
+| `cwd` / `timeoutMs` / `maxTimeoutMs` / `maxOutputBytes` / `maxSpillBytes` / `graceMs` | — | 继承内置 executor 的预算字段 |
+
+环境合成顺序：
+
+```
+PATH = <venv>/bin : prependPath... : <mise shims> : 继承的 PATH    （首次出现优先，自动去重）
+VIRTUAL_ENV = <按 workdir 检测到的 venv>
+MISE_AUTO_INSTALL / MISE_NOT_FOUND_AUTO_INSTALL = 'false'
+envVars 与 envFile 最后应用（可覆盖上面的值）
+```
+
+**venv 排在 `prependPath` 之前**是刻意契约：否则版本管理器的 `python3` shim 会压过 venv，出现 `VIRTUAL_ENV` 指向 A、实际解释器是 B 的静默错误。
+
+覆盖层落在 executor 自身覆盖（`NO_COLOR` / `TERM=dumb` / `PAGER`）和管理事实 `DSH_*` **之上**，随后 `spec.dshEnv` 再压一次——配置永远无法遮蔽托管事实。
+
+### 环境变量文件格式
+
+```sh
+# 注释与空行忽略；行首可写 export
+CARGO_HOME=$HOME/.cargo
+PATH=$PATH:/opt/tools
+LITERAL='$HOME 不被展开'
+```
+
+- `$VAR` / `${VAR}` 相对于该命令**继承到的环境**展开，也可引用同文件中更早的行
+- 单引号包裹的值不做展开
+- 变量名必须合法；`DSH_*` 前缀被拒绝（harness 自己的命名空间）
+- 某一行格式不对 → 命令带着 `文件:行号` 的明确报错失败，改好即恢复
+
+### BASH_ENV / shell 启动文件
+
+`bashEnv` 是唯一的"逃生舱"，也是本插件唯一注入**代码**而非数据的设置。它解决变量表达不了的事：
+
+| 能做 | 不能做 |
+|---|---|
+| 定义 shell **函数**（非交互 shell 里可用 ✅） | 定义 **alias**（非交互 shell 不展开 alias，实测 `type rm` → `/usr/bin/rm`）|
+| 设置 shell 选项、`shopt` | 期望它输出任何东西——文件里的打印会混进**每条**命令的输出 |
+| 执行工具自带的激活脚本（nvm/conda 等） | 承担重活：它在**每条命令**上都会执行，嵌套 shell 还会再执行一次 |
+
+**语义**：bash 只为**非交互** shell source `BASH_ENV`——而 dsh 的每条 `bash -c` 正是非交互的。（`bash --rcfile` 是另一回事：它隐含 `-i`，会引入提示符与回显，所以没有采用。）它在本插件组装好的环境**之后**运行，因此对 PATH 有最终决定权；想让显式变量赢，把 `BASH_ENV` 写进 `envVars` 即可。
+
+**校验**：bash 对一个读不到文件的 `BASH_ENV` 是**静默忽略**的，所以插件自己校验——非绝对路径、文件不存在、或不是普通文件，都会让命令带着原因失败，而不是看起来配了却没生效。
+
+**默认关闭**。要打开就在设置页填这个字段（或写进 YAML），指向类似 `~/.dsh/shell-startup.sh` 的小文件。模板里只放了注释，需要什么自己加。
+
+## 为什么继承 `SandboxBashExecutor`
+
+- 它 `extends LocalBashExecutor`，所以超时、输出上限、spill、后台作业语义全部原样保留；
+- 它是**施加会话文件策略**的那个 executor。改为继承 `LocalBashExecutor` 会静默丢掉 workspace-write 沙箱；
+- 唯一覆写点是 `spawnSpec()`，前台/后台、受限/完全访问**全部**经过它。
+
+`ctx.shell` 每个 context 只允许一个实现，所以 bundle patch 必须先禁用内置行。
+
+### 诊断走命令错误，不走日志
+
+`ctx.logger.warn` 在无头组合里没有落盘/落终端（App 捕获的 `dsh-web.log` 里既没有警告也没有错误），所以它不是一个能被看到的通道。因此配置错误在 `spawnSpec` 里抛出：
+
+- **键名拼错** → 每条命令失败，消息形如
+  `invalid config:\n  - $.venvFalback is not a known option; did you mean "venvFallback"?`
+  executor 仍然挂载，改回配置即可恢复，不需要重启。
+- **类型写错** → 由 schema 校验在**挂载时**报错（`ValidationError: $.prependPath expected array but got ...`），这一条会让该行不挂载，也就是暂时没有 `ctx.shell`。
+- **env 文件问题** → 命令失败，消息带文件名与行号。
+
+## 安装
+
+```bash
+# 1. 建立宿主包链接（见下）
+cd /path/to/dsh-bash-env && node scripts/link-host.mjs
+
+# 2. 链接进 profile 并加入 bundles
+dsh plugin --profile <profile> add link:/path/to/dsh-bash-env
+# 再把 "dsh-bash-env" 加进 ~/.dsh/profiles/<profile>/package.json 的 dsh.profile.bundles
+
+# 3. 在 profile 的 cordis.patch.yml 里写站点配置（见上），或用 Web UI
+```
+
+> 本机注意：`dsh plugin add` 会因缺 pnpm 失败（App 的 runtime 里只有 `corepack`/`node`/`npm`/`npx`），GUI 插件管理器同理。手工等价写入即可：profile 的 `node_modules/<name>` 相对符号链接 + `package.json` 依赖与 bundles + `pnpm-lock.yaml` 的 importer 登记。
+
+### 为什么必须有 `link-host`
+
+用 `link:` 安装的插件，其 realpath 在 profile 树之外。dsh 的加载器对 linked 插件是**从该 realpath 自身的祖先 `node_modules`** 解析裸导入的（`@deepseek-ai/dsh-app-boot` 的 `routeLinked`），而 `~/projects/...` 一路上没有 `@deepseek-ai/*`，于是 `ERR_MODULE_NOT_FOUND`。
+
+`scripts/link-host.mjs` 在插件内建立指向 profile 共享层的相对符号链接。它们最终解析到**和宿主同一份实体文件**，所以服务类保持同一实例——若各自装一份 `@deepseek-ai/cordis`，`ctx.shell` 会直接崩。
+
+## Web UI 设置分区
+
+注册进 shell 的 `settings.section` 列表槽——和 通用 / 模型 / 插件 / Agent 预设 同一层级的**独立分区**（order 12，介于模型 10 与插件 15 之间），而不是通用设置里的一行。
+
+页面结构：
+
+- **顶部说明块**：为什么需要它（非登录 `bash -c` 不读任何启动文件）、PATH 的合成顺序、改动何时生效、出错时的行为、作用范围，以及为什么官方的「终端」卡片不见了。
+- **四个分组**：命令预算 / PATH 与环境变量 / Python 虚拟环境 / mise 工具链。每组带一句组说明（例如其余预算项要去 YAML 配）。
+- **每个设置项**：一句 `hint` 常驻显示；更长的说明放在壳层的信息按钮弹出区里（`SettingsValueField` 的 `help`）。列表与勾选类控件用原生 `<details>` 承担同样的角色，因为壳层的 primitive 只提供单行 input。
+
+绑定的是 profile 里真实组合出的 `bash-env` 行；插件未启用时该分区不出现。保存写入的就是同一个 user 层，与手改 YAML 等价。
+
+> 由于 `bash-sandbox` 被本插件禁用，官方那个 "Terminal / 终端" 设置卡会随之消失（它 `whileServed(['bash-sandbox','pwsh-sandbox'])`）。命令超时与输出上限已并入本分区，功能没有丢失。
+
+### 配置字段必须是 `.volatile()`（插件作者必读）
+
+设置服务拒绝写入任何**非 volatile** 的路径（`dsh-settings`：`Config field "x" is not volatile`）。症状极具误导性：字段在设置页正常渲染、能编辑，但每次保存都被拒——重启也一样，且不说明原因。
+
+内置 executor 的 6 个预算字段全都带 `.volatile()`，本插件自己的 12 个字段也必须带。`test/executor.integration.mjs` 里有一条守卫会遍历 `Config.dict` 断言这一点。
+
+**注意 `.volatile()` 会改变取值的形态**：它解析出的是**访问器**而不是普通值（这正是内置代码处处写 `this.config.timeoutMs.get()` 的原因）。所以读取必须解包，否则数组字段会退化成对象，每条命令都会以 `object is not iterable` 失败。本插件用 `plainConfig()` 在每次 spawn 时统一解包。
+
+### 保存失败时会说明原因
+
+壳层表单把所有拒绝都显示成同一句"本部署没有接受这些值"，**不显示原因**——而两种原因该做的事完全不同：
+
+| 原因 | 含义 | 该怎么办 |
+|---|---|---|
+| `settings/conflict` | 你打开页面后，这份配置被别处改过（revision 过期） | 重开设置再保存 |
+| `settings/rejected` | 宿主拒绝了取值 | 看具体报错改值 |
+
+所以本插件在 `configMutate` 外面包了一层：拒绝时**用当前 revision 重放同一批操作**——
+
+- 重放成功 ⇒ 说明只是 revision 过期。改动**已经保存**，表单按成功处理（清空草稿），页面只多一行说明发生了什么。省掉"重开再点一次"。
+- 重放仍被拒 ⇒ 把宿主的 `code` 与 `message` 原样显示出来。
+- 读不到原因（例如 remote 不可用）⇒ 退回到列出这两类常见原因。
+
+另外 `booleanField` 的 `format` 容忍宿主把布尔值回传成字符串 `'true'`/`'false'`：否则复选框会把已启用的项显示成未勾选，诱使你点一下、产生一次本不需要的写入。
+
+### 为什么页内没有"运行一条命令"的测试器
+
+这是刻意的取舍，不是遗漏。客户端要触达宿主只有两条路：
+
+| 通道 | 插件可用？ | 鉴权 |
+|---|---|---|
+| Typert remote（`ctx.remote.*`） | ❌ | 有，但一个 api 包需要**代码生成**的 `typert.host.js` / `typert.remote-client.js`（各上千行），第三方插件没有这套构建链 |
+| `ctx.webserver.register()` | ✅ | ❌ 平台层没有：cookie 校验在 `dsh-client-connection` 内部且未导出 |
+
+也就是说，页内执行器只能用一条**默认无鉴权的本地 HTTP 路由**来跑任意命令。虽然本地同用户进程本来就能执行命令，但网页可以通过 CSRF / DNS-rebinding 去打 `127.0.0.1`——为此在设置页里开一个执行端点，代价与收益不成比例，所以不做。
+
+### 怎么验证配置生效
+
+在 dsh 的会话里跑（走的就是本插件解析出的环境）：
+
+```bash
+bash -c 'command -v cargo; echo "VE=$VIRTUAL_ENV"; command -v python3; command -v node'
+# 期望：cargo 在 ~/.cargo/bin，VE 指向 ~/.venv 或当前项目的 .venv，
+#       python3 来自该 venv，node 来自 mise shims
+
+bash -c 'printf "%s\n" "$PATH"' | tr ':' '\n' | head -5
+# 期望顺序：<venv>/bin → 额外 PATH 目录 → mise shims → 继承项
+
+# 切换工作目录即切换 venv：
+# 用 bash 工具的 workdir 参数指向另一个项目，再 echo $VIRTUAL_ENV
+```
+
+`SettingsForm` 只负责写配置；**解析结果**永远以真实命令的输出为准——这也是上面那条取舍的另一个理由。
+
+## 测试
+
+```bash
+npm test              # 51 个纯逻辑单测 + 5 个客户端冒烟测试
+npm run test:integration   # 13 个集成测试：真挂载 cordis 组合并执行真命令
+```
+
+集成测试覆盖单测到不了的部分：插件确实以 `ctx.shell` 挂载（无重复注册）、Config 校验通过、解析出的环境真的到达 spawn 的 `bash -c`，包括**嵌套 shell**，以及 `DSH_*` 托管事实不被配置覆盖。
+
+它曾经抓到过一个真 bug：`base.env` 只是覆盖层、**不含 PATH**（继承环境由 subprocess seam 合并），只从它算 PATH 会把 PATH 覆盖成仅剩 prepend 项，连 `bash` 自己都 spawn 不了（`ENOENT`）。
+
+客户端冒烟测试用桩 `window.__ModuleLoader__` / `require` / ctx 验证：包 id、字典、绑定的是 `bash-env`、注册进 `settings.section`（不是 `settings.general.item`）、以及每个控件的文本↔schema 值转换。**它不能验证真实渲染**——shell 的 primitives 依赖 React 与 CSS modules，在 Node 里不可加载。
+
+## 已知边界
+
+- **只影响 bash 工具跑的命令。** dsh 里其他 spawn 路径（`ctx.subprocess` 直连的 MCP server、终端 PTY、插件自起的进程）不经过 shell executor，拿不到这份环境。
+- **不处理 mise 的派生变量。** shims 只提供可执行文件；`JAVA_HOME` / `GOROOT` / `GOBIN` 及 mise 的 `[env]` 段需要 `mise hook-env`，那是另一个（带缓存的）模块，本插件不做。
+- **不提供 `BASH_ENV`。** 需要 shell 函数/`rm` 包装时才有必要，且 alias 在非交互 shell 里本就不生效。
+- **`envVars` 在 UI 里是单行文本域**：每行一条 `KEY=VALUE`，但不做 `$VAR` 展开预览——展开发生在 host 侧。
+- **POSIX only**，`bash-sandbox` 的 gating 照抄（Windows 上本行 disabled，本来也没有 bash）。

@@ -134,7 +134,20 @@ function makeContext(options = {}) {
 			register: (ns, bundle) => dictionaries.push([ns, bundle]),
 		},
 		slots: {
-			register: (options, component) => registered.push([options, component]),
+			declared: new Set(),
+			// Faithful to the real service: `register` throws unless the slot has
+			// been declared, and `inject` waits for that declaration. A card that
+			// registers directly therefore fails this suite the way it would fail
+			// the browser — which is how this was caught after the fact.
+			register(options, component) {
+				if (!this.declared.has(options.name)) throw new Error(`slot "${options.name}" is not declared`)
+				registered.push([options, component])
+				return () => {}
+			},
+			inject(name, callback) {
+				this.declared.add(name)
+				return callback()
+			},
 		},
 		configForms: {
 			get: (id) => {
@@ -173,7 +186,7 @@ function exportsLocale(exports) {
 	const seen = []
 	const ctx = {
 		locale: { bind: () => (key) => key, register: (ns, bundle) => seen.push(bundle) },
-		slots: { register: () => {} },
+		slots: { register: () => {}, inject: (_name, callback) => callback() },
 		configForms: { get: () => ({}), whileServed: (_ids, callback) => callback(new Set()) },
 		effect: (fn) => {
 			fn()
